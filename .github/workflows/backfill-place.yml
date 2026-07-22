@@ -1,0 +1,33 @@
+name: Backfill places
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-repo
+      - name: Run migration
+        run: |
+          python3 -c "
+          import sqlite3
+          conn = sqlite3.connect('event-recommender.db')
+          cols = {r[1] for r in conn.execute('PRAGMA table_info(candidates)').fetchall()}
+          if 'place_written' not in cols:
+              conn.execute('ALTER TABLE candidates ADD COLUMN place_written INTEGER DEFAULT 0')
+              conn.commit()
+              print('MIGRATE: added place_written column')
+          else:
+              print('place_written column already exists')
+          "
+      - name: Update Notion Place properties
+        run: python scripts/backfill_place.py --db event-recommender.db
+      - name: Commit DB changes
+        uses: ./.github/actions/commit-db
+        with:
+          paths: event-recommender.db
+          message: 'backfill: place_written flags updated'

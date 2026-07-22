@@ -1,0 +1,20 @@
+[tool.ruff]
+line-length = 120
+extend-exclude = ["archive", "__pycache__"]
+
+[tool.ruff.lint]
+# Phase 2 rule set (2026-07-12, card "Tighten lint rules once refactor
+# lands"). Rationale per family:
+#   E9 : syntax errors: a gate that never lies (refactor baseline).
+#   F  : full pyflakes: undefined names, unused imports/variables, dead
+#         f-strings. Dead code is where drift hides.
+#   B  : bugbear: real bug patterns (mutable defaults, unused loop vars,
+#         zip without strict) that reviews keep missing.
+#   UP : pyupgrade: one modern idiom per construct on Python 3.12; stops
+#         old/new style mixtures accumulating.
+#   C4 : comprehension correctness/perf; zero cost (0 findings at adoption).
+#   SIM: simplifications: collapse nested ifs and hand-rolled loops so the
+#         next reader sees the condition, not the scaffolding.
+# New findings are fixed or per-line noqa'd with a reason: never blanket-
+# excluded.
+select = ["E9", "F", "B", "UP", "C4", "SIM"]

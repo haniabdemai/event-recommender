@@ -1,0 +1,181 @@
+name: Verify pipeline run
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+    inputs:
+      run_date:
+        description: 'Run date to verify (default: most recent)'
+        required: false
+  push:
+    paths: ['.dispatch/verify-run.trigger']
+permissions:
+  contents: write
+jobs:
+  gate:
+    # Scheduled runs are opt-in: set the repository variable
+    # ER_SCHEDULES_ENABLED=true once your secrets are configured
+    # (docs/setup-guide.md Stage 3). Other triggers always work; the
+    # verify job depends on this one, so gating here gates the run.
+    if: github.event_name != 'schedule' || vars.ER_SCHEDULES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            .dispatch
+            .github
+      - id: gate
+        uses: ./.github/actions/dispatch-gate
+        with:
+          trigger: verify-run
+  verify:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      INPUT_RUN_DATE: ${{ inputs.run_date }}
+      NTFY_TOPIC: ${{ vars.NTFY_TOPIC }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-repo
+
+      - name: 'Phase 1: Diagnostic'
+        id: phase1
+        run: |
+          FLAGS=()
+          if [ -n "$INPUT_RUN_DATE" ]; then
+            FLAGS=(--run-date "$INPUT_RUN_DATE")
+          fi
+          python3 scripts/verify_pipeline_run.py "${FLAGS[@]}" | tee phase1_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          FIXABLE=$(python3 -c "import json; d=json.load(open('.last_qa_diagnostic.json')); print(d['summary']['fixable'])" 2>/dev/null || echo "0")
+          echo "fixable=$FIXABLE" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: 'Phase 2: Newsletter extraction verification'
+        id: phase2
+        run: |
+          RUN_DATE="$INPUT_RUN_DATE"
+          if [ -z "$RUN_DATE" ]; then
+            RUN_DATE=$(python3 -c "import json; print(json.load(open('.last_qa_diagnostic.json'))['run_date'])" 2>/dev/null || echo "")
+          fi
+          if [ -z "$RUN_DATE" ]; then
+            echo "No run date available, skipping Phase 2"
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If the session already committed newsletter results with Pass 2 findings,
+          # use those instead of re-running (which would overwrite LLM results with
+          # Pass 1 only).
+          if [ -f ".last_qa_newsletter.json" ]; then
+            HAS_PASS2=$(python3 -c "
+          import json
+          d = json.load(open('.last_qa_newsletter.json'))
+          findings = d.get('pass2', {}).get('findings', [])
+          print('yes' if findings else 'no')
+          " 2>/dev/null || echo "no")
+            if [ "$HAS_PASS2" = "yes" ]; then
+              echo "Session already committed newsletter results with Pass 2 findings: using existing file"
+              MISMATCHES=$(python3 -c "import json; print(json.load(open('.last_qa_newsletter.json'))['pass1']['mismatches'])" 2>/dev/null || echo "0")
+              if [ "$MISMATCHES" != "0" ]; then
+                echo "exit_code=1" >> "$GITHUB_OUTPUT"
+              else
+                echo "exit_code=0" >> "$GITHUB_OUTPUT"
+              fi
+              exit 0
+            fi
+          fi
+
+          python3 scripts/verify_newsletter_extraction.py --run-date "$RUN_DATE" | tee phase2_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: 'Phase 3: Auto-fix (conditional)'
+        id: phase3
+        if: steps.phase1.outputs.fixable != '0' || steps.phase2.outputs.exit_code != '0'
+        run: |
+          python3 scripts/qa_autofix.py | tee phase3_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+          if git diff --quiet event-recommender.db; then
+            echo "No DB changes to commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add event-recommender.db
+            git commit -m "QA auto-fix: $(date -u +%Y-%m-%d)"
+            git push origin HEAD
+            echo "DB changes committed and pushed"
+          fi
+          exit 0
+
+      - name: 'Phase 4: Notification'
+        env:
+          P1_EXIT: ${{ steps.phase1.outputs.exit_code }}
+          P2_EXIT: ${{ steps.phase2.outputs.exit_code }}
+        run: |
+          SUMMARY=$(python3 -c "
+          import json, os
+          d = json.load(open('.last_qa_diagnostic.json'))
+          s = d['summary']
+          parts = [str(s['passed']) + ' passed']
+          if s['failed']:
+              parts.append(str(s['failed']) + ' failed')
+          if s['fixable']:
+              parts.append(str(s['fixable']) + ' auto-fixed')
+          if s['needs_attention']:
+              parts.append(str(s['needs_attention']) + ' need attention')
+          nl_path = '.last_qa_newsletter.json'
+          if os.path.exists(nl_path):
+              nl = json.load(open(nl_path))
+              m = nl.get('pass1', {}).get('mismatches', 0)
+              if m > 0:
+                  parts.append(str(m) + ' newsletter mismatches')
+          print(', '.join(parts))
+          " 2>/dev/null || echo "QA results unavailable")
+
+          if [ "$P1_EXIT" = "0" ] && [ "$P2_EXIT" = "0" ]; then
+            TITLE="Event Recommender QA: PASSED"
+            PRIO="default"
+          else
+            TITLE="Event Recommender QA: ISSUES FOUND"
+            PRIO="high"
+          fi
+
+          [ -z "${NTFY_TOPIC}" ] || curl -s -o /dev/null \
+            -H "Title: $TITLE" \
+            -H "Priority: $PRIO" \
+            -d "$SUMMARY" \
+            "https://ntfy.sh/${NTFY_TOPIC}"
+
+      - name: Commit QA diagnostic
+        # Persisting the diagnostic is deliberately non-fatal (pre-refactor
+        # behaviour): a push race here must not fail QA that already passed.
+        continue-on-error: true
+        uses: ./.github/actions/commit-db
+        with:
+          paths: .last_qa_diagnostic.json
+          message: 'QA diagnostic: {DATE}'
+
+      - name: Fail if unfixable issues remain
+        run: |
+          NEEDS_ATTENTION=$(python3 -c "import json; print(json.load(open('.last_qa_diagnostic.json'))['summary']['needs_attention'])" 2>/dev/null || echo "0")
+          if [ "$NEEDS_ATTENTION" != "0" ]; then
+            echo "QA found $NEEDS_ATTENTION issues that need human attention"
+            exit 1
+          fi
+
+      - name: Signal dispatch completion
+        if: always()
+        uses: ./.github/actions/signal-done
+        with:
+          trigger: verify-run
+          status: ${{ job.status }}

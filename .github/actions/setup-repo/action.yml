@@ -1,0 +1,23 @@
+name: Setup repo
+description: >
+  Python 3.12 + optional pip installs. Checkout stays per-workflow
+  (some workflows need fetch-depth or ref control). WP7 composite:
+  replaces the setup block duplicated across every workflow.
+inputs:
+  pip-install:
+    description: Space-separated pip packages to install (empty = none)
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - name: Install packages
+      if: inputs.pip-install != ''
+      shell: bash
+      env:
+        PIP_PACKAGES: ${{ inputs.pip-install }}
+      # Deliberately unquoted: the input is a space-separated package list.
+      run: pip install $PIP_PACKAGES

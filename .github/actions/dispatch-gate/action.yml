@@ -1,0 +1,52 @@
+name: Dispatch gate
+description: >
+  Decide whether a push-triggered dispatch run is genuine. The push paths
+  filter fires on the trigger file's deletion too (a cleanup commit removing
+  it), and merging a pipeline branch replays any live trigger file onto main
+  (both bit the 2026-07-07 run). Skip when the trigger file is absent from
+  the checkout, or when its timestamp is older than max-age-minutes. Events
+  other than push (schedule, workflow_dispatch) always pass.
+inputs:
+  trigger:
+    description: Trigger name (file is .dispatch/<trigger>.trigger)
+    required: true
+  max-age-minutes:
+    description: Treat a trigger timestamp older than this as a stale replay
+    required: false
+    default: '30'
+outputs:
+  skip:
+    description: "'true' when this run should do no work"
+    value: ${{ steps.check.outputs.skip }}
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        TRIGGER: ${{ inputs.trigger }}
+        MAX_AGE_MIN: ${{ inputs.max-age-minutes }}
+        EVENT_NAME: ${{ github.event_name }}
+      run: |
+        skip=false
+        reason="genuine dispatch"
+        if [ "$EVENT_NAME" = "push" ]; then
+          f=".dispatch/${TRIGGER}.trigger"
+          if [ ! -f "$f" ]; then
+            skip=true
+            reason="trigger file absent: deletion/cleanup push"
+          else
+            ts=$(head -c 64 "$f" | tr -d '[:space:]')
+            if epoch=$(date -u -d "$ts" +%s 2>/dev/null); then
+              age_min=$(( ( $(date -u +%s) - epoch ) / 60 ))
+              if [ "$age_min" -gt "$MAX_AGE_MIN" ]; then
+                skip=true
+                reason="trigger timestamp ${age_min}m old: stale replay (e.g. merge to main)"
+              fi
+            fi
+            # Non-timestamp trigger content (cleanup-branch carries a branch
+            # name) cannot be age-checked: treat as genuine.
+          fi
+        fi
+        echo "skip=$skip" >> "$GITHUB_OUTPUT"
+        echo "dispatch-gate: skip=$skip ($reason)"

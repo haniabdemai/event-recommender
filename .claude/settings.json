@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/session-start-git-check.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // \"\"' | grep -qiE 'sqlite3|event-recommender\\.db' && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"STOP: Before querying the candidates table, you MUST have read CLAUDE.md, section Database semantics. Key rules: (1) pipeline_state is the pipeline disposition column: values are text (pending_llm, vetoed, llm_rejected, written, expired) (2) llm_tier determines Notion eligibility, NOT tier. They often disagree: that is by design. (3) Some rows have pipeline_state=written AND llm_tier=Not Recommended: these are historical (LLM ran retrospectively on already-written events). Not a bug. (4) Before filtering on ANY column, run SELECT DISTINCT <column> FROM candidates to verify actual values. Do not assume from column names or docs.\"}}'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

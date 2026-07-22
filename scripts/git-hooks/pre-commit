@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Real git pre-commit hook. Installed via `git config core.hooksPath
+# scripts/git-hooks` (done idempotently by scripts/session-start-git-check.sh
+# at every session start). Logic lives in scripts/pre-commit-check.sh.
+exec bash "$(git rev-parse --show-toplevel)/scripts/pre-commit-check.sh"

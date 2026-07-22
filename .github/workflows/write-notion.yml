@@ -1,0 +1,88 @@
+name: Write to Notion
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.dispatch/write-notion.trigger']
+permissions:
+  contents: write
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            .dispatch
+            .github
+      - id: gate
+        uses: ./.github/actions/dispatch-gate
+        with:
+          trigger: write-notion
+  write:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    env:
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-repo
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Write to Notion, log, commit, push
+        run: |
+          set -o pipefail
+          bash weekly_run.sh write-commit 2>&1 | tee .action_output.log
+
+      - name: Sync enriched descriptions to existing Notion pages
+        run: python3 scripts/backfill_description.py --db event-recommender.db 2>&1 | tee -a .action_output.log
+
+      - name: Commit error diagnostic on failure
+        if: failure()
+        run: |
+          python3 -c "
+          import json, os, datetime
+
+          error = {
+              'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'workflow': 'write-notion.yml',
+          }
+
+          if os.path.exists('.last_run_status.json'):
+              with open('.last_run_status.json') as f:
+                  error['status'] = json.load(f)
+          else:
+              error['status'] = {
+                  'phase': 'unknown',
+                  'outcome': 'fail',
+                  'detail': 'write_status not called: crash before error handler',
+              }
+
+          if os.path.exists('.action_output.log'):
+              with open('.action_output.log') as f:
+                  lines = f.readlines()
+                  error['last_50_lines'] = ''.join(lines[-50:])
+
+          with open('.last_write_error.json', 'w') as f:
+              json.dump(error, f, indent=2)
+          "
+          git add .last_write_error.json
+          git commit -m "diagnostic: write-notion failure $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push origin HEAD || echo "WARN: Could not push error diagnostic"
+
+      - name: Signal dispatch completion
+        if: always()
+        uses: ./.github/actions/signal-done
+        with:
+          trigger: write-notion
+          status: ${{ job.status }}

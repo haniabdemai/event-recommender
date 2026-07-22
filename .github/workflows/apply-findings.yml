@@ -1,0 +1,52 @@
+name: Apply approved findings
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.dispatch/apply-findings.trigger']
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            .dispatch
+            .github
+      - id: gate
+        uses: ./.github/actions/dispatch-gate
+        with:
+          trigger: apply-findings
+  apply:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-repo
+
+      - name: Apply findings
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          FEEDBACK_DB_ID: ${{ secrets.FEEDBACK_DB_ID }}
+        run: python3 pipeline/apply_findings.py
+
+      - name: Commit if changed
+        uses: ./.github/actions/commit-db
+        with:
+          paths: scoring_overrides.json
+          message: 'auto: apply approved scoring findings'
+
+      - name: Signal dispatch completion
+        if: always()
+        uses: ./.github/actions/signal-done
+        with:
+          trigger: apply-findings
+          status: ${{ job.status }}

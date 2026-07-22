@@ -1,0 +1,61 @@
+name: DB regression guard
+on:
+  push:
+    paths: ['event-recommender.db']
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      NTFY_TOPIC: ${{ vars.NTFY_TOPIC }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+
+      - name: Check row count and run_dates haven't regressed
+        run: |
+          CURRENT_COUNT=$(python3 -c "import sqlite3; print(sqlite3.connect('event-recommender.db').execute('SELECT COUNT(*) FROM candidates').fetchone()[0])")
+          CURRENT_DATES=$(python3 -c "import sqlite3; print(','.join(sorted(r[0] for r in sqlite3.connect('event-recommender.db').execute('SELECT DISTINCT run_date FROM candidates').fetchall())))")
+
+          git checkout HEAD~1 -- event-recommender.db 2>/dev/null
+          PREVIOUS_COUNT=$(python3 -c "import sqlite3; print(sqlite3.connect('event-recommender.db').execute('SELECT COUNT(*) FROM candidates').fetchone()[0])")
+          PREVIOUS_DATES=$(python3 -c "import sqlite3; print(','.join(sorted(r[0] for r in sqlite3.connect('event-recommender.db').execute('SELECT DISTINCT run_date FROM candidates').fetchall())))")
+          git checkout HEAD -- event-recommender.db
+
+          echo "Previous: $PREVIOUS_COUNT rows, dates=[$PREVIOUS_DATES]"
+          echo "Current:  $CURRENT_COUNT rows, dates=[$CURRENT_DATES]"
+
+          # Check for vanished run_dates. The date strings come from the DB,
+          # so they are untrusted: pass them through the environment and read
+          # os.environ rather than expanding them into the Python source.
+          export PREVIOUS_DATES CURRENT_DATES
+          MISSING=$(python3 -c "
+          import os
+          prev = set(os.environ.get('PREVIOUS_DATES', '').split(','))
+          curr = set(os.environ.get('CURRENT_DATES', '').split(','))
+          missing = prev - curr
+          if missing:
+              print(','.join(sorted(missing)))
+          ")
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::DB REGRESSION: run_dates vanished: $MISSING"
+            [ -n "${NTFY_TOPIC}" ] && curl -s -o /dev/null -H "Title: DB REGRESSION: run_dates lost" \
+              -d "event-recommender.db lost run_dates: $MISSING (rows: $PREVIOUS_COUNT → $CURRENT_COUNT)" \
+              "https://ntfy.sh/${NTFY_TOPIC}"
+            exit 1
+          fi
+
+          if [ "$CURRENT_COUNT" -lt "$PREVIOUS_COUNT" ]; then
+            echo "::error::DB REGRESSION: $CURRENT_COUNT rows < $PREVIOUS_COUNT rows. Candidates were lost."
+            [ -n "${NTFY_TOPIC}" ] && curl -s -o /dev/null -H "Title: DB REGRESSION: row count drop" \
+              -d "event-recommender.db dropped from $PREVIOUS_COUNT to $CURRENT_COUNT rows" \
+              "https://ntfy.sh/${NTFY_TOPIC}"
+            exit 1
+          fi
+
+          echo "DB integrity check passed: $CURRENT_COUNT rows, no run_dates lost"

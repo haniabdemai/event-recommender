@@ -1,0 +1,52 @@
+.env
+*.key
+api-key*
+.maps-session-key
+.github-pat
+.DS_Store
+__pycache__/
+*.pyc
+.last_run_status.json
+.pipeline_run_log.json
+.last_split_state_report.json
+.action_output.log
+
+# LLM sense-check paper trail (regenerated each run; real output lands in SQLite)
+.batch_*_prompt.txt
+.llm_batches.json
+.llm_batch_prompts/
+.llm_results.json
+.smoke_test_batch.json
+
+# Description enrichment (regenerated each run)
+.enrich_batches.json
+.enrich_results.json
+.last_enrichment_summary.json
+
+# Newsletter discovery (regenerated each run)
+.newsletter_discovery.json
+
+# One-off backfill instruction/progress pairs (keep on disk; out of git)
+.backfill_*_instructions.json
+.backfill_*_progress.json
+.time_backfill_*.json
+
+# Subagent email-body scratch files must never be committed (use mktemp; see prompt Step 2b)
+email_*
+
+# Your data: never committed to the public template. (In your own private
+# instance repo you may choose to track the DB; see the setup guide.)
+event-recommender.db
+references/taste-profile.md
+scoring_overrides.json
+
+# Run artefacts (regenerated each run)
+.llm_sense_check_results.json
+.llm_prepare_manifest.json
+.newsletter_emails_processed.json
+.emails_to_label.json
+.enrichment_results.json
+.last_pipeline_summary.json
+
+# Taste bootstrap payload (your calendar history — personal data)
+.taste_bootstrap.json

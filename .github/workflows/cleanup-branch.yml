@@ -1,0 +1,103 @@
+# Trigger-file protocol: DIVERGES from the dispatch-poll convention on
+# purpose (see weekly_run.sh dispatch-poll).
+#   - content-bearing: the trigger file's first line IS the branch name
+#     (dispatch-poll triggers are empty markers).
+#   - no .done signal: Step 9 fires this and moves on: nothing polls it,
+#     so signal-done would write a file nobody consumes.
+#   - consumed on failure: the trigger is removed via `if: always()` so a
+#     failed deletion cannot re-fire on the next unrelated push. Failures
+#     alert via ntfy instead (step below).
+name: Delete merged pipeline branch
+on:
+  workflow_dispatch:
+    inputs:
+      branch_name:
+        description: "Branch to delete (e.g. pipeline/run-2026-05-19)"
+        required: true
+  push:
+    paths: ['.dispatch/cleanup-branch.trigger']
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            .dispatch
+            .github
+      - id: gate
+        uses: ./.github/actions/dispatch-gate
+        with:
+          trigger: cleanup-branch
+  delete:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve branch name
+        id: resolve
+        env:
+          INPUT_BRANCH: ${{ inputs.branch_name }}
+        run: |
+          if [ -n "$INPUT_BRANCH" ]; then
+            branch="$INPUT_BRANCH"
+          elif [ -f .dispatch/cleanup-branch.trigger ]; then
+            branch=$(head -1 .dispatch/cleanup-branch.trigger | tr -d '[:space:]')
+          else
+            echo "No branch name (trigger file already consumed): nothing to do"
+            echo "branch=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$branch" ] || [ "$branch" = "main" ]; then
+            echo "::error::Refusing to delete '$branch'"
+            exit 1
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Delete remote branch
+        if: steps.resolve.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.resolve.outputs.branch }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! gh api "repos/${REPO}/git/ref/heads/${BRANCH}" --silent 2>/dev/null; then
+            echo "Already gone: refs/heads/$BRANCH"
+            exit 0
+          fi
+          echo "Deleting refs/heads/$BRANCH"
+          gh api -X DELETE "repos/${REPO}/git/refs/heads/${BRANCH}"
+          echo "Deleted"
+
+      - name: Alert on deletion failure
+        if: failure()
+        env:
+          BRANCH: ${{ steps.resolve.outputs.branch }}
+        run: |
+          # Fallback literal: this step's whole job is alerting, so it must
+          # survive a checkout where erlib is absent/broken (bash -e here).
+          NTFY_TOPIC="${NTFY_TOPIC:-$(python3 -c 'from erlib.config import NTFY_TOPIC; print(NTFY_TOPIC)' 2>/dev/null || echo '')}"
+          [ -z "${NTFY_TOPIC}" ] || curl -s -o /dev/null \
+            -H "Title: cleanup-branch FAILED" \
+            -H "Priority: high" \
+            -d "Branch '${BRANCH}' was not deleted (trigger consumed, will not retry). Delete manually or re-dispatch cleanup-branch.yml." \
+            "https://ntfy.sh/${NTFY_TOPIC}" || true
+
+      - name: Remove trigger file
+        if: always()
+        run: |
+          [ -f .dispatch/cleanup-branch.trigger ] || exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git rm -f .dispatch/cleanup-branch.trigger
+          git commit -m "dispatch-done: cleanup-branch (${{ job.status }})"
+          git pull --rebase origin "${GITHUB_REF_NAME}" || git rebase --abort
+          git push || true

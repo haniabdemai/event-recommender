@@ -1,0 +1,58 @@
+name: Commit and push
+description: >
+  Bot identity + add + diff-guard + rebase-and-push with an explicit
+  conflict policy. WP7 composite: replaces the commit block duplicated
+  across nine workflows, which had drifted into three different conflict
+  behaviours.
+inputs:
+  paths:
+    description: Files to git add (space-separated)
+    required: true
+  message:
+    description: Commit message. The token {DATE} expands to UTC YYYY-MM-DD.
+    required: true
+  conflict-policy:
+    description: >
+      fail (default): abort the rebase and fail the job: never silently
+      lose either side. keep-local-db: on conflict keep THIS run's files
+      (fetch.yml only: the replayed commit carries the fresh fetch data).
+      During a pull --rebase conflict the replayed local commit is the
+      THEIRS side (--ours is upstream): verified empirically 2026-07-05;
+      the old fetch.yml block used --ours and silently kept the remote DB.
+    required: false
+    default: fail
+runs:
+  using: composite
+  steps:
+    - name: Commit and push
+      shell: bash
+      env:
+        ADD_PATHS: ${{ inputs.paths }}
+        COMMIT_MSG: ${{ inputs.message }}
+        CONFLICT_POLICY: ${{ inputs.conflict-policy }}
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        # shellcheck disable=SC2086: paths are intentionally word-split
+        git add $ADD_PATHS
+        if git diff --cached --quiet; then
+          echo "No changes: nothing to commit"
+          exit 0
+        fi
+        git commit -m "${COMMIT_MSG//\{DATE\}/$(date -u +%Y-%m-%d)}"
+        if [ "$CONFLICT_POLICY" = "keep-local-db" ]; then
+          git pull --rebase origin "${GITHUB_REF_NAME}" || {
+            # Resolve EVERY conflicted path with this run's version
+            # (--theirs = the replayed local commit during rebase). A
+            # single-file resolve left counts-file conflicts unresolved
+            # and the runner stuck mid-rebase.
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              git checkout --theirs -- "$f"
+              git add -- "$f"
+            done
+            GIT_EDITOR=true git rebase --continue
+          }
+        else
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || { git rebase --abort; exit 1; }
+        fi
+        git push

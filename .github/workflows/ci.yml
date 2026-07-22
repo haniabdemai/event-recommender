@@ -1,0 +1,31 @@
+name: CI
+
+# The refactor's safety net (2026-07): every PR and every push to main runs
+# lint, the duplication + prompt-contract guards, and the full offline test
+# suite.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install dev tools
+        run: pip install ruff pytest
+
+      - name: Fast checks (lint + guards)
+        run: make check-fast
+
+      - name: Full test suite
+        run: make test

@@ -1,0 +1,25 @@
+{
+  "disagreements": "[7] Ceramics Taster: Borderline → Recommended: Hands-on creative workshop matching past pottery attendance",
+  "duration": "0 min",
+  "events_added": 12,
+  "issues": "Meetup: 1 group failed; 2 candidates remaining in pending_llm; 1 candidates remaining in pending_travel; 1 candidates stuck in ready_to_write; 1 candidates failed during Notion write; Validator corrected 2 hard-veto LLM mistakes; Borderline cap enforced: 1 demoted",
+  "pipeline": "29 fetched → 5 Python vetoed → 2 duplicates removed → 22 to LLM (3 descriptions enriched) → 1 LLM rejected → 3 validator corrections → 12 written | STUCK: 2 in pending_llm, 1 in pending_travel, 1 in ready_to_write, 1 write_failed",
+  "run_log": [
+    {
+      "detail": "schema ok",
+      "outcome": "success",
+      "step": "preflight",
+      "timestamp_utc": "2026-07-04T19:00:00+00:00"
+    },
+    {
+      "detail": "28 scored",
+      "outcome": "success",
+      "step": "score-travel",
+      "timestamp_utc": "2026-07-04T19:05:00+00:00"
+    }
+  ],
+  "sources": "The Roundup: 12 events (1 Jul, 2 Jul); City Weekly: 5 events (1 Jul): 2 of 15 senders; Meetup 10; Luma 5",
+  "status": "Partial",
+  "tier_breakdown": "3 Top Picks, 6 Recommended, 3 Borderline",
+  "trigger": "Automatic"
+}

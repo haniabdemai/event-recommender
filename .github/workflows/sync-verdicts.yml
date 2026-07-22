@@ -1,0 +1,32 @@
+name: Verdict sync and archive
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'     # every Monday 09:00 UTC; script checks ISO week parity
+  workflow_dispatch:         # manual trigger
+
+jobs:
+  sync:
+    # Scheduled runs are opt-in: set the repository variable
+    # ER_SCHEDULES_ENABLED=true once your secrets are configured
+    # (docs/setup-guide.md Stage 3). Manual triggers always work.
+    if: github.event_name != 'schedule' || vars.ER_SCHEDULES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-repo
+
+      - run: python pipeline/sync_verdicts.py
+        working-directory: .
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+
+      - name: Commit updated DB and logs
+        uses: ./.github/actions/commit-db
+        with:
+          paths: event-recommender.db sync_log.txt archive_log.txt
+          message: Fortnightly verdict sync

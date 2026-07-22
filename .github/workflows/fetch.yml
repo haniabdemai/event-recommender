@@ -1,0 +1,69 @@
+name: Fetch Meetup + Luma
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.dispatch/fetch.trigger']
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            .dispatch
+            .github
+      - id: gate
+        uses: ./.github/actions/dispatch-gate
+        with:
+          trigger: fetch
+  fetch:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-repo
+
+      - name: Verify event dates against source APIs
+        run: python3 pipeline/verify_event_dates.py
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        continue-on-error: true
+
+      - name: Fetch Meetup
+        id: meetup
+        run: python3 pipeline/fetch_meetup.py
+        continue-on-error: true
+
+      - name: Fetch Luma
+        id: luma
+        run: python3 pipeline/fetch_luma.py
+        continue-on-error: true
+
+      - name: Fail if both fetchers crashed
+        if: steps.meetup.outcome == 'failure' && steps.luma.outcome == 'failure'
+        run: |
+          echo "FETCH_FAIL: Both Meetup and Luma fetchers failed" >&2
+          exit 1
+
+      - name: Commit and push
+        uses: ./.github/actions/commit-db
+        with:
+          paths: event-recommender.db .meetup_fetch_counts.json .luma_fetch_counts.json
+          message: Fetch + verify {DATE}
+          conflict-policy: keep-local-db
+
+      - name: Signal dispatch completion
+        if: always()
+        uses: ./.github/actions/signal-done
+        with:
+          trigger: fetch
+          status: ${{ job.status }}

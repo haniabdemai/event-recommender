@@ -1,0 +1,43 @@
+name: Signal dispatch completion
+description: >
+  Write .dispatch/<trigger>.done with the job status and remove the
+  trigger file, so weekly_run.sh dispatch-poll sees completion. WP7
+  composite: replaces the block duplicated verbatim in five workflows.
+  Pass status from the caller (composites cannot read job context).
+inputs:
+  trigger:
+    description: Trigger name (e.g. fetch, write-notion)
+    required: true
+  status:
+    description: "Job status (pass the caller's job.status value; composites cannot read job context directly)"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Signal completion
+      shell: bash
+      env:
+        TRIGGER: ${{ inputs.trigger }}
+        JOB_STATUS: ${{ inputs.status }}
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        mkdir -p .dispatch
+        echo "$JOB_STATUS" > ".dispatch/${TRIGGER}.done"
+        git add ".dispatch/${TRIGGER}.done"
+        git rm -f ".dispatch/${TRIGGER}.trigger" 2>/dev/null || true
+        git diff --cached --quiet && exit 0
+        git commit -m "dispatch-done: ${TRIGGER} (${JOB_STATUS})"
+        # The .done commit is what weekly_run.sh dispatch-poll waits for:
+        # a swallowed push race means the poller burns its full timeout on
+        # a green run. Retry the rebase+push up to 3 times before giving up.
+        for attempt in 1 2 3; do
+          if git pull --rebase origin "${GITHUB_REF_NAME}" && git push; then
+            echo "Signal pushed (attempt $attempt)"
+            exit 0
+          fi
+          git rebase --abort 2>/dev/null || true
+          echo "Signal push attempt $attempt failed; retrying in 5s"
+          sleep 5
+        done
+        echo "::warning::dispatch-done signal for ${TRIGGER} could not be pushed after 3 attempts"

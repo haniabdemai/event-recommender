@@ -1,0 +1,111 @@
+name: Move processed emails to To Be Deleted folder
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.dispatch/label-emails.trigger']
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            .dispatch
+            .github
+      - id: gate
+        uses: ./.github/actions/dispatch-gate
+        with:
+          trigger: label-emails
+  label:
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-repo
+        with:
+          pip-install: "google-api-python-client google-auth-httplib2 google-auth-oauthlib"
+
+      - name: Probe Gmail credential (fail fast with a named error)
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          # probe_gmail lives in scripts/health_probes.py (offline-tested).
+          # Exit 1 = credential BAD (re-auth). Exit 2 = inconclusive (secret
+          # unset / transient network): warn and continue; the real work
+          # step produces the definitive error, so a network blip never
+          # masquerades as a revoked token.
+          rc=0
+          python3 scripts/health_probes.py gmail || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "::error::GMAIL_TOKEN_JSON invalid or expired: re-auth needed (see probe output above)"
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            echo "::warning::Gmail probe inconclusive (exit $rc): continuing; the label step will surface any real failure"
+          fi
+
+      - name: Clean up stale error diagnostic
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git rm --ignore-unmatch .last_label_error.json 2>/dev/null
+          git diff --cached --quiet || {
+            git commit -m "chore: remove stale label-emails error diagnostic"
+            git push origin HEAD || true
+          }
+
+      - name: Move emails to To Be Deleted folder
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -o pipefail
+          python3 scripts/label_emails.py 2>&1 | tee .action_output.log
+
+      - name: Commit error diagnostic on failure
+        if: failure()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python3 -c "
+          import json, datetime
+
+          error = {
+              'timestamp_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'workflow': 'label-emails.yml',
+          }
+
+          try:
+              with open('.action_output.log') as f:
+                  lines = f.readlines()
+                  error['last_50_lines'] = ''.join(lines[-50:])
+          except FileNotFoundError:
+              error['last_50_lines'] = 'No output captured: crash before tee'
+
+          with open('.last_label_error.json', 'w') as f:
+              json.dump(error, f, indent=2)
+          "
+          git add .last_label_error.json
+          git commit -m "diagnostic: label-emails failure $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push origin HEAD || echo "WARN: Could not push error diagnostic"
+
+      - name: Commit cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "chore: remove .emails_to_label.json after moving emails"
+          git push
+
+      - name: Signal dispatch completion
+        if: always()
+        uses: ./.github/actions/signal-done
+        with:
+          trigger: label-emails
+          status: ${{ job.status }}

@@ -1,0 +1,75 @@
+name: Feedback digest
+
+on:
+  schedule:
+    - cron: '0 10 * * 1'    # every Monday 10:00 UTC; script checks ISO week parity
+  workflow_dispatch:          # manual trigger: always runs (--force)
+    inputs:
+      days:
+        description: 'Days to look back (default 30)'
+        required: false
+        default: '30'
+      dry_run:
+        description: 'Dry run (no writes)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  digest:
+    # Scheduled runs are opt-in: set the repository variable
+    # ER_SCHEDULES_ENABLED=true once your secrets are configured
+    # (docs/setup-guide.md Stage 3). Manual triggers always work.
+    if: github.event_name != 'schedule' || vars.ER_SCHEDULES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-repo
+
+      # Step 1: Sync verdicts first (ensures SQLite has latest Notion verdicts)
+      # If this fails, the workflow stops: no point running digest on stale data
+      - name: Sync verdicts
+        run: python pipeline/sync_verdicts.py --force
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+
+      - name: Commit verdict sync
+        uses: ./.github/actions/commit-db
+        with:
+          paths: event-recommender.db sync_log.txt archive_log.txt
+          message: Pre-digest verdict sync
+
+      # Step 2: Run feedback digest
+      # --force on workflow_dispatch so manual triggers always run regardless of ISO week
+      - name: Run feedback digest
+        run: |
+          FORCE_FLAG=""
+          DRY_RUN_FLAG=""
+          if [ "$IS_MANUAL" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          python pipeline/feedback_digest.py --days "$INPUT_DAYS" $FORCE_FLAG $DRY_RUN_FLAG
+        env:
+          INPUT_DAYS: ${{ github.event.inputs.days || '30' }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          IS_MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          FEEDBACK_DB_ID: ${{ secrets.FEEDBACK_DB_ID }}
+          PIPELINE_RUNS_DB_ID: ${{ secrets.PIPELINE_RUNS_DB_ID }}
+
+      - name: Commit digest results
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: ./.github/actions/commit-db
+        with:
+          paths: event-recommender.db .feedback_digest.json
+          message: Fortnightly feedback digest
