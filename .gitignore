@@ -50,3 +50,6 @@ scoring_overrides.json
 
 # Taste bootstrap payload (your calendar history — personal data)
 .taste_bootstrap.json
+
+# handshake markers written by dispatched runs, never committed
+.dispatch/*.done
